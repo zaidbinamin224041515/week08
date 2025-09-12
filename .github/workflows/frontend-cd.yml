@@ -14,7 +14,7 @@ on:
       order_api_ip:
         description: 'External IP of Order Service (e.g., http://Y.Y.Y.Y:8001)'
         required: true
-        default: 'http://<ip_address>:8001'
+        default: 'http://4.237.176.120:8001'
       aks_cluster_name:
         description: 'Name of the AKS Cluster to deploy to'
         required: true
