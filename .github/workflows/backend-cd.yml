@@ -1,101 +1,124 @@
-name: CD - Deploy Backend Services to AKS
+name: Backend CD - Deploy Backend Services to AKS
 
 on:
   workflow_dispatch:
     inputs:
       aks_cluster_name:
-        description: 'Name of the AKS Cluster to deploy to'
+        description: Name of the AKS Cluster to deploy to
         required: true
-        default: '<aks_cluster_name>'
+        default: sit722-aks-9165
       aks_resource_group:
-        description: 'Resource Group of the AKS Cluster'
+        description: Resource Group of the AKS Cluster
         required: true
-        default: '<resource_group_name>'
+        default: sit722-w08-rg-9165
       aks_acr_name:
-        description: 'Name of ACR'
+        description: Short ACR name (no domain, e.g. sit722acr9165)
         required: true
-        default: '<acr_name>'
+        default: sit722acr9165
+
+env:
+  AKS_CLUSTER_NAME: ${{ github.event.inputs.aks_cluster_name }}
+  AKS_RESOURCE_GROUP: ${{ github.event.inputs.aks_resource_group }}
+  ACR_NAME: ${{ github.event.inputs.aks_acr_name }}
 
 jobs:
   deploy_backend:
     runs-on: ubuntu-latest
     environment: Production
-    
+
     outputs:
       PRODUCT_API_IP: ${{ steps.get_product_ip.outputs.external_ip }}
-      ORDER_API_IP: ${{ steps.get_order_ip.outputs.external_ip }}
+      ORDER_API_IP:   ${{ steps.get_order_ip.outputs.external_ip }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to Azure
-        uses: azure/login@v1
+      - name: Azure Login
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          enable-AzPSSession: true
 
-      - name: Set Kubernetes context (get AKS credentials)
-        run: |
-          az aks get-credentials --resource-group ${{ github.event.inputs.aks_resource_group }} --name ${{ github.event.inputs.aks_cluster_name }} --overwrite-existing
+      - name: Get AKS credentials
+        run: az aks get-credentials -g "$AKS_RESOURCE_GROUP" -n "$AKS_CLUSTER_NAME" --overwrite-existing
 
-      - name: Attach ACR
-        run: |
-          az aks update --name ${{ github.event.inputs.aks_cluster_name }} --resource-group ${{ github.event.inputs.aks_resource_group }} --attach-acr ${{ github.event.inputs.aks_acr_name }}
+      # Optional: attach ACR (your tenant policy may deny; allow failure without breaking deploy)
+      - name: Try attach ACR (optional)
+        run: az aks update -g "$AKS_RESOURCE_GROUP" -n "$AKS_CLUSTER_NAME" --attach-acr "$ACR_NAME"
+        continue-on-error: true
 
-      - name: Deploy Backend Infrastructure (Namespace, ConfigMaps, Secrets, Databases)
+      # Ensure the cluster can pull from ACR even if attach-acr is denied by policy
+      - name: Create/patch imagePullSecret (acr-pull) and default SA
+        shell: bash
         run: |
-          echo "Deploying backend infrastructure..."
-          cd k8s/
-          kubectl apply -f configmaps.yaml
-          kubectl apply -f secrets.yaml
-          kubectl apply -f product-db.yaml
-          kubectl apply -f order-db.yaml
+          set -euo pipefail
+          ACR_SERVER="${ACR_NAME}.azurecr.io"
+          ACR_USER="$(az acr credential show -n "$ACR_NAME" --query username -o tsv)"
+          ACR_PASS="$(az acr credential show -n "$ACR_NAME" --query passwords[0].value -o tsv)"
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="$ACR_SERVER" \
+            --docker-username="$ACR_USER" \
+            --docker-password="$ACR_PASS" \
+            --docker-email "devnull@example.com" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          # Patch default service account so all pods inherit the pull secret
+          kubectl patch serviceaccount default \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
 
-      - name: Deploy Backend Microservices (Product, Order)
+      - name: Apply Config/Secrets/DB (only if files exist)
+        shell: bash
         run: |
-          echo "Deploying backend microservices..."
-          cd k8s/
+          set -e
+          cd k8s
+          [ -f configmap.yaml ]   && kubectl apply -f configmap.yaml   || echo "configmap.yaml not found (ok)"
+          [ -f configmaps.yaml ]  && kubectl apply -f configmaps.yaml  || true
+          [ -f secrets.yaml ]     && kubectl apply -f secrets.yaml     || echo "secrets.yaml not found (ensure you created it)"
+          [ -f product-db.yaml ]  && kubectl apply -f product-db.yaml  || echo "product-db.yaml not found (ok)"
+          [ -f order-db.yaml ]    && kubectl apply -f order-db.yaml    || echo "order-db.yaml not found (ok)"
+
+      - name: Deploy Backend Services
+        shell: bash
+        run: |
+          set -e
+          cd k8s
           kubectl apply -f product-service.yaml
           kubectl apply -f order-service.yaml
-      
-      - name: Wait for Backend LoadBalancer IPs
-        run: |
-          echo "Waiting for Product, Order LoadBalancer IPs to be assigned (up to 5 minutes)..."
-          PRODUCT_IP=""
-          ORDER_IP=""
-          
-          for i in $(seq 1 60); do
-            echo "Attempt $i/60 to get IPs..."
-            PRODUCT_IP=$(kubectl get service product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            ORDER_IP=$(kubectl get service order-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          kubectl get deploy,po,svc -l app=product-service -o wide || true
+          kubectl get deploy,po,svc -l app=order-service   -o wide || true
 
-            if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" ]]; then
-              echo "All backend LoadBalancer IPs assigned!"
-              echo "Product Service IP: $PRODUCT_IP"
-              echo "Order Service IP: $ORDER_IP"
+      - name: Wait for LoadBalancer IPs (Product & Order)
+        id: wait_ips
+        shell: bash
+        run: |
+          set -e
+          echo "Waiting for LoadBalancer IPs (up to ~5m)..."
+          for i in $(seq 1 60); do
+            PRODUCT_IP="$(kubectl get svc product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)"
+            ORDER_IP="$(kubectl get svc order-service-w08e1   -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)"
+            echo "Attempt $i: PRODUCT_IP=${PRODUCT_IP:-none}, ORDER_IP=${ORDER_IP:-none}"
+            if [[ -n "${PRODUCT_IP}" && -n "${ORDER_IP}" ]]; then
+              echo "PRODUCT_IP=$PRODUCT_IP" >> "$GITHUB_ENV"
+              echo "ORDER_IP=$ORDER_IP"     >> "$GITHUB_ENV"
               break
             fi
-            sleep 5 # Wait 5 seconds before next attempt
+            sleep 5
           done
-          
-          if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" ]]; then
-            echo "Error: One or more LoadBalancer IPs not assigned after timeout."
-            exit 1 # Fail the job if IPs are not obtained
+          if [[ -z "${PRODUCT_IP:-}" || -z "${ORDER_IP:-}" ]]; then
+            echo "ERROR: One or both LoadBalancer IPs not assigned in time."
+            exit 1
           fi
-          
-          # These are environment variables for subsequent steps in the *same job*
-          # And used to set the job outputs
-          echo "PRODUCT_IP=$PRODUCT_IP" >> $GITHUB_ENV
-          echo "ORDER_IP=$ORDER_IP" >> $GITHUB_ENV
 
-      - name: Capture Product Service IP for Workflow Output
+      - name: Capture Product Service IP
         id: get_product_ip
-        run: echo "external_ip=${{ env.PRODUCT_IP }}" >> $GITHUB_OUTPUT
-      
-      - name: Capture Order Service IP for Workflow Output
-        id: get_order_ip
-        run: echo "external_ip=${{ env.ORDER_IP }}" >> $GITHUB_OUTPUT
+        run: echo "external_ip=${{ env.PRODUCT_IP }}" >> "$GITHUB_OUTPUT"
 
-      - name: Logout from Azure
+      - name: Capture Order Service IP
+        id: get_order_ip
+        run: echo "external_ip=${{ env.ORDER_IP }}" >> "$GITHUB_OUTPUT"
+
+      - name: Show services
+        run: kubectl get svc -A -o wide
+
+      - name: Logout Azure
+        if: always()
         run: az logout
