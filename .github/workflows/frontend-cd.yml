@@ -20,24 +20,9 @@ on:
         required: true
         default: 'sit722-w08-rg-9165'
 
-  workflow_call:
-    inputs:
-      product_api_base:
-        required: true
-        type: string
-      order_api_base:
-        required: true
-        type: string
-      aks_cluster_name:
-        required: true
-        type: string
-      aks_resource_group:
-        required: true
-        type: string
-
 env:
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}   # e.g. sit722acr9165.azurecr.io
-  ACR_NAME:         ${{ secrets.ACR_NAME }}           # e.g. sit722acr9165
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}   # sit722acr9165.azurecr.io
+  ACR_NAME:         ${{ secrets.ACR_NAME }}           # sit722acr9165
 
 jobs:
   deploy_frontend:
@@ -53,17 +38,21 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # Remove CR/LF/whitespace from ACR_LOGIN_SERVER to avoid invalid docker tags
+      - name: Normalize ACR vars
+        shell: bash
+        run: |
+          CLEAN="$(echo -n "${ACR_LOGIN_SERVER}" | tr -d '\r\n' | xargs)"
+          echo "ACR_LOGIN_SERVER=$CLEAN" >> "$GITHUB_ENV"
+
       - name: Login to Azure Container Registry
         run: az acr login --name "${{ env.ACR_NAME }}"
 
       - name: Inject Backend API bases into frontend/main.js
         run: |
-          echo "Injecting API bases into frontend/main.js"
           sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_base }}|g" frontend/main.js
           sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_base }}|g"   frontend/main.js
-          echo "----- main.js (after) -----"
           grep -E "PRODUCT_API_BASE_URL|ORDER_API_BASE_URL" -n frontend/main.js || true
-          echo "---------------------------"
 
       - name: Build & Push Frontend image to ACR
         run: |
@@ -78,7 +67,6 @@ jobs:
 
       - name: Deploy Frontend to AKS
         run: |
-          echo "Deploying frontend to AKS: ${{ inputs.aks_cluster_name }}"
           kubectl apply -f k8s/frontend.yaml
           kubectl get deploy,po,svc -l app=frontend -o wide || true
 
