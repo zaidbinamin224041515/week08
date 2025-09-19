@@ -12,25 +12,31 @@ on:
       push:
         required: true
         type: boolean
+    outputs:
+      digest:
+        description: Image digest from build-push
+        value: ${{ jobs.build-push.outputs.digest }}
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  build:
+  build-push:
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract Docker metadata
-        id: meta
+      - id: meta
+      # tags/labels for reproducibility
         uses: docker/metadata-action@v5
         with:
           images: ${{ inputs.registry }}/${{ inputs.image_name }}
           tags: |
+            type=sha
             type=ref,event=tag
-            type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Azure login (OIDC)
@@ -41,13 +47,13 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: ACR login
-        run: az acr login --name ${{ inputs.registry }}
+        run: az acr login --name week08registry
 
-      - name: Build & (optionally) push
-        id: bp
+      - id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./backend
+          file: ./backend/Dockerfile
           push: ${{ inputs.push }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -55,7 +61,3 @@ jobs:
           provenance: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Export digest
-        id: out
-        run: echo "digest=${{ steps.bp.outputs.digest }}" >> $GITHUB_OUTPUT
