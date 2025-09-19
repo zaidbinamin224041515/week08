@@ -1,0 +1,54 @@
+﻿name: CD (Prod)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  REGISTRY: <your-acr>.azurecr.io
+  IMAGE_NAME: week08-app
+  AKS_RG: <rg>
+  AKS_NAME: <aks-name>
+  NAMESPACE: prod
+
+jobs:
+  build-and-push:
+    uses: ./.github/workflows/build_push.yml
+    with:
+      registry: ${{ env.REGISTRY }}
+      image_name: ${{ env.IMAGE_NAME }}
+      push: true
+    secrets: inherit
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: https://<your-prod-url>
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.AKS_RG }}
+          cluster-name: ${{ env.AKS_NAME }}
+
+      - name: Create namespace if needed
+        run: kubectl create ns $env:NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update deployment image by digest
+        run: |
+          echo "DIGEST=${{ needs.build-and-push.outputs.digest }}" >> $env:GITHUB_ENV
+          kubectl -n $env:NAMESPACE set image deploy/week08-api api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ env:DIGEST }}
+          kubectl -n $env:NAMESPACE rollout status deploy/week08-api --timeout=180s
