@@ -4,6 +4,10 @@ on:
     branches: [ develop, main ]
 jobs:
   build:
+    permissions:
+      id-token: write
+      contents: read
     uses: ./.github/workflows/reusable-build.yml
+    secrets: inherit
     with:
       environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
