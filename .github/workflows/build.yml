@@ -3,12 +3,8 @@ on:
   push:
     branches: [ develop, main ]
 
-env:
-  ACR_SERVER: sit722w09zaidregistry.azurecr.io
-
 jobs:
   build:
-    # IMPORTANT: pass OIDC + secrets to the called workflow
     permissions:
       id-token: write
       contents: read
@@ -28,7 +24,7 @@ jobs:
     uses: ./.github/workflows/reusable-build.yml
     secrets: inherit
     with:
-      registry:   ${{ env.ACR_SERVER }}
+      registry:   "sit722w09zaidregistry.azurecr.io"   # <-- ACR login server
       image_name: ${{ matrix.image_name }}
       context:    ${{ matrix.context }}
       dockerfile: ${{ matrix.dockerfile }}
