@@ -1,9 +1,10 @@
 name: Deploy
+
 on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Tag to deploy (default: latest)"
+        description: "Container tag to deploy (default: latest)"
         required: false
         default: "latest"
 
@@ -11,45 +12,26 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
-    permissions:
-      id-token: write
-      contents: read
-    env:
-      RG:         sit722-w09-rg
-      AKS:        sit722-w09-aks
-      ACR_SERVER: sit722w09zaidregistry.azurecr.io
-      TAG:        ${{ inputs.image_tag }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
+      - name: Azure login (Service Principal)
         uses: azure/login@v2
         with:
-          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Get AKS credentials
-        run: az aks get-credentials -g $RG -n $AKS --overwrite-existing
+        run: az aks get-credentials --resource-group sit722-w09-rg --name sit722-w09-aks --overwrite-existing
 
-      - name: Apply manifests
+      - name: Rollout web deployment
+        env:
+          ACR_SERVER: sit722w09zaidregistry.azurecr.io   # <-- your ACR login server
+          TAG: ${{ inputs.image_tag }}
         run: |
-          kubectl apply -f k8s/
-
-      - name: Roll product_service
-        run: |
-          kubectl set image deployment/product-service product-service=$ACR_SERVER/product_service:$TAG
-          kubectl rollout status deployment/product-service
-
-      - name: Roll order_service
-        run: |
-          kubectl set image deployment/order-service order-service=$ACR_SERVER/order_service:$TAG
-          kubectl rollout status deployment/order-service
-
-      - name: Roll frontend
-        run: |
-          kubectl set image deployment/frontend frontend-container=$ACR_SERVER/frontend:$TAG
-          kubectl rollout status deployment/frontend
+          # Replace 'app' and 'web' if your image/deployment names differ
+          kubectl set image deployment/web web=$ACR_SERVER/app:$TAG
+          kubectl rollout status deployment/web --timeout=180s
 
       - name: Show services
         run: kubectl get svc -A -o wide
