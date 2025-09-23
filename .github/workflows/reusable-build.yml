@@ -48,3 +48,5 @@ jobs:
           docker build -t $ACR_SERVER/frontend:${TAG} -t $ACR_SERVER/frontend:latest ./frontend
           docker push  $ACR_SERVER/frontend:${TAG}
           docker push  $ACR_SERVER/frontend:latest
+      - name: Who am I
+        run: az account show
