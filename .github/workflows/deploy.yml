@@ -1,0 +1,55 @@
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag to deploy (default: latest)"
+        required: false
+        default: "latest"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      RG:         sit722-w09-rg
+      AKS:        sit722-w09-aks
+      ACR_SERVER: sit722w09zaidregistry.azurecr.io
+      TAG:        ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials -g $RG -n $AKS --overwrite-existing
+
+      - name: Apply manifests
+        run: |
+          kubectl apply -f k8s/
+
+      - name: Roll product_service
+        run: |
+          kubectl set image deployment/product-service product-service=$ACR_SERVER/product_service:$TAG
+          kubectl rollout status deployment/product-service
+
+      - name: Roll order_service
+        run: |
+          kubectl set image deployment/order-service order-service=$ACR_SERVER/order_service:$TAG
+          kubectl rollout status deployment/order-service
+
+      - name: Roll frontend
+        run: |
+          kubectl set image deployment/frontend frontend-container=$ACR_SERVER/frontend:$TAG
+          kubectl rollout status deployment/frontend
+
+      - name: Show services
+        run: kubectl get svc -A -o wide

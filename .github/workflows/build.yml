@@ -1,0 +1,9 @@
+name: Build & Push
+on:
+  push:
+    branches: [ develop, main ]
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
