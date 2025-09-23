@@ -1,23 +1,47 @@
-name: Reusable Build
+name: Reusable Build & Push
+
 on:
   workflow_call:
     inputs:
-      environment:
+      registry:         # e.g. sit722w09zaidregistry.azurecr.io
         required: true
         type: string
+      image_name:       # e.g. product_service
+        required: true
+        type: string
+      context:          # e.g. ./backend/product_service
+        required: true
+        type: string
+      dockerfile:       # e.g. ./backend/product_service/Dockerfile
+        required: true
+        type: string
+      push:             # true on develop/main
+        required: true
+        type: boolean
+    outputs:
+      digest:
+        description: Image digest from build-push
+        value: ${{ jobs.build-push.outputs.digest }}
 
 jobs:
-  docker:
+  build-push:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
-    env:
-      ACR_NAME:   sit722w09zaidregistry
-      ACR_SERVER: sit722w09zaidregistry.azurecr.io
-      TAG:        ${{ github.sha }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.registry }}/${{ inputs.image_name }}
+          tags: |
+            type=sha
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -29,24 +53,17 @@ jobs:
       - name: ACR login
         uses: azure/docker-login@v2
         with:
-          login-server: ${{ env.ACR_SERVER }}
+          login-server: ${{ inputs.registry }}
 
-      - name: Build & push product_service
-        run: |
-          docker build -t $ACR_SERVER/product_service:${TAG} -t $ACR_SERVER/product_service:latest ./backend/product_service
-          docker push  $ACR_SERVER/product_service:${TAG}
-          docker push  $ACR_SERVER/product_service:latest
-
-      - name: Build & push order_service
-        run: |
-          docker build -t $ACR_SERVER/order_service:${TAG} -t $ACR_SERVER/order_service:latest ./backend/order_service
-          docker push  $ACR_SERVER/order_service:${TAG}
-          docker push  $ACR_SERVER/order_service:latest
-
-      - name: Build & push frontend
-        run: |
-          docker build -t $ACR_SERVER/frontend:${TAG} -t $ACR_SERVER/frontend:latest ./frontend
-          docker push  $ACR_SERVER/frontend:${TAG}
-          docker push  $ACR_SERVER/frontend:latest
-      - name: Who am I
-        run: az account show
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context:   ${{ inputs.context }}
+          file:      ${{ inputs.dockerfile }}
+          push:      ${{ inputs.push }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          sbom: true
+          provenance: true
+          tags:   ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

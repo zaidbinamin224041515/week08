@@ -2,12 +2,34 @@ name: Build & Push
 on:
   push:
     branches: [ develop, main ]
+
+env:
+  ACR_SERVER: sit722w09zaidregistry.azurecr.io
+
 jobs:
   build:
+    # IMPORTANT: pass OIDC + secrets to the called workflow
     permissions:
       id-token: write
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: product_service
+            context:   ./backend/product_service
+            dockerfile: ./backend/product_service/Dockerfile
+          - image_name: order_service
+            context:   ./backend/order_service
+            dockerfile: ./backend/order_service/Dockerfile
+          - image_name: frontend
+            context:   ./frontend
+            dockerfile: ./frontend/Dockerfile
     uses: ./.github/workflows/reusable-build.yml
     secrets: inherit
     with:
-      environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      registry:   ${{ env.ACR_SERVER }}
+      image_name: ${{ matrix.image_name }}
+      context:    ${{ matrix.context }}
+      dockerfile: ${{ matrix.dockerfile }}
+      push: true
